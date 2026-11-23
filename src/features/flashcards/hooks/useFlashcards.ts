@@ -10,16 +10,79 @@ import { useSpeech } from './useSpeech';
 
 interface UseFlashcardsProps {
   initialCards: Flashcard[];
+  storageKey?: string;
 }
 
-export function useFlashcards({ initialCards }: UseFlashcardsProps) {
+export function useFlashcards({ initialCards, storageKey }: UseFlashcardsProps) {
+  // Helper to read initial progress from localStorage
+  const getStoredState = useCallback(() => {
+    if (typeof window === 'undefined' || !storageKey) {
+      return { index: 0, statusMap: {} as Record<string | number, CardStatus> };
+    }
+    try {
+      const raw = localStorage.getItem(storageKey);
+      if (!raw) return { index: 0, statusMap: {} };
+      const parsed = JSON.parse(raw);
+      let index = 0;
+      if (
+        typeof parsed.currentIndex === 'number' &&
+        parsed.currentIndex >= 0 &&
+        parsed.currentIndex < initialCards.length
+      ) {
+        index = parsed.currentIndex;
+      }
+      // If cardId is stored, try to match by cardId for precision
+      if (parsed.cardId) {
+        const found = initialCards.findIndex((c) => c.id === parsed.cardId);
+        if (found !== -1) {
+          index = found;
+        }
+      }
+      return {
+        index,
+        statusMap: parsed.statusMap || {},
+      };
+    } catch {
+      return { index: 0, statusMap: {} };
+    }
+  }, [storageKey, initialCards]);
+
   const [cards, setCards] = useState<Flashcard[]>(initialCards);
-  const [currentIndex, setCurrentIndex] = useState(0);
+  const [currentIndex, setCurrentIndex] = useState<number>(() => getStoredState().index);
   const [isFlipped, setIsFlipped] = useState(false);
-  const [statusMap, setStatusMap] = useState<Record<string | number, CardStatus>>({});
+  const [statusMap, setStatusMap] = useState<Record<string | number, CardStatus>>(
+    () => getStoredState().statusMap
+  );
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [isFinished, setIsFinished] = useState(false);
   const [isAutoPlaying, setIsAutoPlaying] = useState(false);
+
+  // Synchronize when initialCards or storageKey change
+  useEffect(() => {
+    setCards(initialCards);
+    const restored = getStoredState();
+    setCurrentIndex(restored.index);
+    setStatusMap(restored.statusMap);
+    setIsFlipped(false);
+    setIsFinished(false);
+  }, [initialCards, storageKey, getStoredState]);
+
+  // Persist progress to localStorage whenever currentIndex or statusMap updates
+  useEffect(() => {
+    if (typeof window === 'undefined' || !storageKey || cards.length === 0) return;
+    try {
+      const current = cards[currentIndex];
+      localStorage.setItem(
+        storageKey,
+        JSON.stringify({
+          currentIndex,
+          cardId: current?.id,
+          statusMap,
+          updatedAt: Date.now(),
+        })
+      );
+    } catch {}
+  }, [currentIndex, cards, statusMap, storageKey]);
 
   const [settings, setSettings] = useState<StudySettings>({
     displaySide: 'term_first',
@@ -39,7 +102,7 @@ export function useFlashcards({ initialCards }: UseFlashcardsProps) {
     knownCount: cards.filter((c) => statusMap[c.id] === 'known').length,
     learningCount: cards.filter((c) => statusMap[c.id] === 'learning').length,
     unseenCount: cards.filter((c) => !statusMap[c.id] || statusMap[c.id] === 'unseen').length,
-    progressPercent: cards.length > 0 ? Math.round(((currentIndex) / cards.length) * 100) : 0,
+    progressPercent: cards.length > 0 ? Math.round((currentIndex / cards.length) * 100) : 0,
   };
 
   // Flip card
@@ -110,6 +173,19 @@ export function useFlashcards({ initialCards }: UseFlashcardsProps) {
       cancelAutoPlay();
     }
   }, [currentIndex, cards.length, stopSpeech, cancelAutoPlay]);
+
+  // Jump to specific card index
+  const jumpToCard = useCallback(
+    (targetIndex: number) => {
+      if (targetIndex >= 0 && targetIndex < cards.length) {
+        stopSpeech();
+        setIsFlipped(false);
+        setIsFinished(false);
+        setCurrentIndex(targetIndex);
+      }
+    },
+    [cards.length, stopSpeech]
+  );
 
   // Mark card as Known or Learning
   const rateCard = useCallback(
@@ -186,18 +262,26 @@ export function useFlashcards({ initialCards }: UseFlashcardsProps) {
     setHistory([]);
   }, [cancelAutoPlay]);
 
-  // Reset all
+  // Reset to beginning
   const resetAll = useCallback(
     (newCardsList?: Flashcard[]) => {
       cancelAutoPlay();
-      setCards(newCardsList || initialCards);
+      if (newCardsList) {
+        setCards(newCardsList);
+      }
       setCurrentIndex(0);
       setIsFlipped(false);
       setStatusMap({});
       setHistory([]);
       setIsFinished(false);
+
+      if (typeof window !== 'undefined' && storageKey) {
+        try {
+          localStorage.removeItem(storageKey);
+        } catch {}
+      }
     },
-    [initialCards, cancelAutoPlay]
+    [cancelAutoPlay, storageKey]
   );
 
   // Review only cards that were marked as 'learning'
@@ -275,7 +359,6 @@ export function useFlashcards({ initialCards }: UseFlashcardsProps) {
   // Keyboard navigation
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't intercept when focusing on input/textarea/select
       const activeTag = document.activeElement?.tagName.toLowerCase();
       if (activeTag === 'input' || activeTag === 'textarea' || activeTag === 'select') {
         return;
@@ -316,6 +399,7 @@ export function useFlashcards({ initialCards }: UseFlashcardsProps) {
     rateCard,
     goPrevious,
     goNext,
+    jumpToCard,
     canGoPrevious: currentIndex > 0,
     canGoNext: currentIndex + 1 < cards.length,
     undo,

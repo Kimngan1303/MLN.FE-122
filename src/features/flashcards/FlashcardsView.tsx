@@ -1,10 +1,13 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   ArrowLeft,
   ArrowRight,
   BookOpen,
   Filter,
   Search,
+  RotateCcw,
+  BookmarkCheck,
+  Hash,
 } from 'lucide-react';
 import {
   MLN_FLASHCARDS,
@@ -20,22 +23,39 @@ import { FlashcardSettingsModal } from './components/FlashcardSettingsModal';
 import { KeyboardShortcutsHelp } from './components/KeyboardShortcutsHelp';
 import { Flashcard } from './types';
 
+const PRESET_STORAGE_KEY = 'mln122_flashcards_active_preset';
+
 interface FlashcardsViewProps {
   customCards?: Flashcard[];
 }
 
 export const FlashcardsView: React.FC<FlashcardsViewProps> = ({ customCards }) => {
-  const [selectedPresetId, setSelectedPresetId] = useState<string>('random-20');
+  // Restore last selected preset or default to 'all' (526 questions)
+  const [selectedPresetId, setSelectedPresetId] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem(PRESET_STORAGE_KEY);
+        if (saved) return saved;
+      } catch {}
+    }
+    return 'all';
+  });
+
   const [searchQuery, setSearchQuery] = useState('');
+  const [jumpInput, setJumpInput] = useState('');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
 
-  // Initialize with selected preset or questions
-  const getInitialList = (): Flashcard[] => {
+  // Determine current cards list based on preset
+  const getCardsForPreset = (presetId: string): Flashcard[] => {
     if (customCards && customCards.length > 0) return customCards;
-    const preset = FLASHCARD_PRESETS.find((p) => p.id === selectedPresetId);
-    return preset ? preset.getCards() : MLN_FLASHCARDS.slice(0, 20);
+    if (presetId === 'demo-web') return INITIAL_FLASHCARDS;
+    const preset = FLASHCARD_PRESETS.find((p) => p.id === presetId);
+    return preset ? preset.getCards() : MLN_FLASHCARDS;
   };
+
+  const currentCardsList = getCardsForPreset(selectedPresetId);
+  const storageKey = `mln122_flashcards_progress_${selectedPresetId}`;
 
   const {
     cards,
@@ -51,6 +71,7 @@ export const FlashcardsView: React.FC<FlashcardsViewProps> = ({ customCards }) =
     toggleFlip,
     goPrevious,
     goNext,
+    jumpToCard,
     canGoPrevious,
     canGoNext,
     undo,
@@ -63,21 +84,24 @@ export const FlashcardsView: React.FC<FlashcardsViewProps> = ({ customCards }) =
     speakText,
     canUndo,
   } = useFlashcards({
-    initialCards: getInitialList(),
+    initialCards: currentCardsList,
+    storageKey,
   });
+
+  // Save selected preset whenever it changes
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem(PRESET_STORAGE_KEY, selectedPresetId);
+      } catch {}
+    }
+  }, [selectedPresetId]);
 
   // Handle Preset Change
   const handlePresetChange = (presetId: string) => {
     setSelectedPresetId(presetId);
     setSearchQuery('');
-    if (presetId === 'demo-web') {
-      resetAll(INITIAL_FLASHCARDS);
-      return;
-    }
-    const preset = FLASHCARD_PRESETS.find((p) => p.id === presetId);
-    if (preset) {
-      resetAll(preset.getCards());
-    }
+    setJumpInput('');
   };
 
   // Handle Search in Question Bank
@@ -101,6 +125,18 @@ export const FlashcardsView: React.FC<FlashcardsViewProps> = ({ customCards }) =
     }
   };
 
+  // Jump to specific card by number
+  const handleJumpSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const num = parseInt(jumpInput, 10);
+    if (!isNaN(num) && num >= 1 && num <= cards.length) {
+      jumpToCard(num - 1);
+      setJumpInput('');
+    } else {
+      alert(`Vui lòng nhập số câu từ 1 đến ${cards.length}`);
+    }
+  };
+
   return (
     <div className="w-full max-w-4xl mx-auto px-4 py-4 sm:py-8">
       {/* Header & Title */}
@@ -113,12 +149,12 @@ export const FlashcardsView: React.FC<FlashcardsViewProps> = ({ customCards }) =
           Thẻ Ghi Nhớ Câu Hỏi Trắc Nghiệm
         </h1>
         <p className="text-xs sm:text-sm text-gray-500 dark:text-gray-400 max-w-xl mx-auto">
-          Tổng hợp 526 câu hỏi từ ngân hàng câu hỏi. Lật thẻ để xem đáp án đúng và giải thích chi tiết.
+          Tự động ghi nhớ vị trí câu đang học. Khi mở lại trang, bạn sẽ tiếp tục đúng câu trước đó.
         </p>
       </div>
 
-      {/* Preset & Search Toolbar */}
-      <div className="w-full max-w-2xl mx-auto mb-6 p-3 rounded-2xl bg-white dark:bg-[#192923] border border-gray-200 dark:border-[#31473c] shadow-sm flex flex-col sm:flex-row items-center gap-3">
+      {/* Preset, Search & Jump Toolbar */}
+      <div className="w-full max-w-2xl mx-auto mb-4 p-3 rounded-2xl bg-white dark:bg-[#192923] border border-gray-200 dark:border-[#31473c] shadow-sm flex flex-col sm:flex-row items-center gap-3">
         {/* Preset Selector */}
         <div className="flex items-center gap-2 w-full sm:w-auto flex-1">
           <Filter className="w-4 h-4 text-emerald-600 flex-shrink-0" />
@@ -136,8 +172,8 @@ export const FlashcardsView: React.FC<FlashcardsViewProps> = ({ customCards }) =
           </select>
         </div>
 
-        {/* Search Input */}
-        <form onSubmit={handleSearchSubmit} className="flex items-center gap-1.5 w-full sm:w-64">
+        {/* Quick Search */}
+        <form onSubmit={handleSearchSubmit} className="flex items-center gap-1.5 w-full sm:w-56">
           <div className="relative flex-1">
             <input
               type="text"
@@ -157,6 +193,45 @@ export const FlashcardsView: React.FC<FlashcardsViewProps> = ({ customCards }) =
         </form>
       </div>
 
+      {/* Persistence Status & Quick Jump Bar */}
+      <div className="w-full max-w-2xl mx-auto mb-5 px-3 py-2 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200/60 dark:border-emerald-900/40 flex items-center justify-between text-xs text-emerald-800 dark:text-emerald-300">
+        <div className="flex items-center gap-2">
+          <BookmarkCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400 flex-shrink-0" />
+          <span>
+            Đang học: <strong>Câu {currentIndex + 1}</strong> / {cards.length}
+          </span>
+        </div>
+
+        <div className="flex items-center gap-3">
+          {/* Quick jump input */}
+          <form onSubmit={handleJumpSubmit} className="flex items-center gap-1">
+            <Hash className="w-3 h-3 text-emerald-600" />
+            <input
+              type="number"
+              min={1}
+              max={cards.length}
+              placeholder="Đến câu..."
+              value={jumpInput}
+              onChange={(e) => setJumpInput(e.target.value)}
+              className="w-16 px-1.5 py-0.5 text-xs rounded-md border border-emerald-300 dark:border-emerald-800 bg-white dark:bg-[#192923] text-gray-800 dark:text-gray-100 focus:outline-none text-center"
+            />
+          </form>
+
+          {/* Reset to first card if not already at 0 */}
+          {currentIndex > 0 && (
+            <button
+              type="button"
+              onClick={() => jumpToCard(0)}
+              className="text-[11px] font-semibold underline hover:text-emerald-900 dark:hover:text-emerald-200 flex items-center gap-1 cursor-pointer"
+              title="Quay lại câu đầu tiên của bộ thẻ này"
+            >
+              <RotateCcw className="w-3 h-3" />
+              <span>Về câu 1</span>
+            </button>
+          )}
+        </div>
+      </div>
+
       {/* Main Content Area */}
       {isFinished ? (
         <FlashcardSummary
@@ -164,7 +239,7 @@ export const FlashcardsView: React.FC<FlashcardsViewProps> = ({ customCards }) =
           cards={cards}
           statusMap={statusMap}
           onRestartUnlearned={restartUnlearned}
-          onResetAll={() => handlePresetChange(selectedPresetId)}
+          onResetAll={() => jumpToCard(0)}
         />
       ) : cards.length === 0 ? (
         <div className="text-center p-12 bg-white dark:bg-[#192923] rounded-3xl border border-gray-200 dark:border-[#31473c] shadow-sm max-w-2xl mx-auto">
@@ -173,10 +248,10 @@ export const FlashcardsView: React.FC<FlashcardsViewProps> = ({ customCards }) =
           </p>
           <button
             type="button"
-            onClick={() => handlePresetChange('random-20')}
+            onClick={() => handlePresetChange('all')}
             className="px-6 py-2.5 rounded-xl bg-emerald-600 text-white font-semibold text-sm hover:bg-emerald-700 transition-all cursor-pointer"
           >
-            Tải 20 câu ngẫu nhiên
+            Tải lại toàn bộ câu hỏi
           </button>
         </div>
       ) : (
@@ -256,7 +331,7 @@ export const FlashcardsView: React.FC<FlashcardsViewProps> = ({ customCards }) =
             }}
             onOpenSettings={() => setIsSettingsOpen(true)}
             onOpenShortcuts={() => setIsShortcutsOpen(true)}
-            onReset={() => handlePresetChange(selectedPresetId)}
+            onReset={() => jumpToCard(0)}
           />
         </div>
       )}
